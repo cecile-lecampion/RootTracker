@@ -133,6 +133,15 @@ create_dose_effect_plot <- function(summary_AZ, AZ_df_No_NA, day_selected, var1,
     colors <- RColorBrewer::brewer.pal(max(3, length(unique_levels)), "Set2")[1:length(unique_levels)]
     names(colors) <- unique_levels
   }
+
+  # Préparer les breaks/labels pour l'axe x en utilisant les concentrations présentes
+  x_breaks <- sort(unique(as.numeric(as.character(plot_data[[var2]]))))
+  # Filtrer les NA et valeurs non-positives (log scale nécessite > 0)
+  x_breaks <- x_breaks[!is.na(x_breaks) & x_breaks > 0]
+  if (length(x_breaks) == 0) {
+    # fallback raisonnable si aucune concentration valide (évite l'erreur de longueur)
+    x_breaks <- c(0.01, 0.1, 1, 10)
+  }
   
   # ANALYSE STATISTIQUE PAR CONCENTRATION
   # STRATEGY: Compare between lines at each concentration
@@ -219,8 +228,9 @@ create_dose_effect_plot <- function(summary_AZ, AZ_df_No_NA, day_selected, var1,
     geom_line(linewidth = 1.5) +
     geom_point(size = 3) +
     geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = .1, linewidth = 1) +
-    scale_x_continuous(trans = 'log10', 
-                       labels = c(0, 0.01, 0.1, 1, 10)) +
+    scale_x_continuous(trans = 'log10',
+               breaks = x_breaks,
+               labels = as.character(x_breaks)) +
     scale_color_manual(values = colors) +
     theme_light(base_size = base_size) +
     theme(
