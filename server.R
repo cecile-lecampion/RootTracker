@@ -729,6 +729,24 @@ server <- function(input, output, session) {
     }
   })
   
+  # DYNAMIC UI FOR TIME COURSE CONCENTRATION SELECTION
+  # STRATEGY: Populate concentration choices from actual data (same as bar plot)
+  # PURPOSE: Only show concentrations that exist in the data (excluding control)
+  output$timecourse_concentration_ui <- renderUI({
+    req(result_df$data, input$var2)
+    req(concentration_values$mapping_complete)
+    
+    conc_values <- result_df$data[[input$var2]]
+    conc_choices <- sort(unique(conc_values[conc_values != 0]))
+    
+    if (length(conc_choices) > 0) {
+      selectInput("timecourse_concentration",
+                  paste("Select", input$var2, ":"),
+                  choices = conc_choices,
+                  selected = conc_choices[1])
+    }
+  })
+  
   # ANALYSIS EXECUTION WHEN START BUTTON IS CLICKED
   # STRATEGY: Event-driven analysis execution with complete workflow
   # PURPOSE: Perform statistical analysis and generate visualizations
@@ -788,6 +806,18 @@ server <- function(input, output, session) {
           var1_order = current_order,
           base_size = input$plot_text_size %||% 16
         )
+      } else if (plot_type == "timecourse") {
+        req(input$timecourse_concentration)
+        plot_result <- create_time_course_plot(
+          dose_data$summary_AZ,
+          dose_data$AZ_df,
+          dose_selected = as.numeric(input$timecourse_concentration),
+          var1 = input$var1,
+          var2 = input$var2,
+          colors = colors,
+          var1_order = current_order,
+          base_size = input$plot_text_size %||% 16
+        )
       } else if (plot_type == "violin") {
         plot_result <- create_violin_plot(
           dose_data$AZ_df,  # Utiliser les données du dose_data
@@ -829,17 +859,34 @@ server <- function(input, output, session) {
           curve_stats <- Filter(function(x) {
             is.list(x) && !is.null(x$significant)
           }, stats)
-
+          
           if (length(curve_stats) == 0) {
             return("No concentration-wise statistics available for this curve.")
           }
-
+          
           sig_concs <- names(curve_stats)[vapply(curve_stats, function(x) isTRUE(x$significant), logical(1))]
           if (length(sig_concs) > 0) {
             return(paste("Significant differences found at concentrations:",
                          paste(sig_concs, collapse = ", ")))
           } else {
             return("No significant differences found at any concentration")
+          }
+        } else if (current_plot_type == "timecourse") {
+          # Pour time course plot, afficher résumé des tests par jour
+          day_stats <- Filter(function(x) {
+            is.list(x) && !is.null(x$significant)
+          }, stats)
+          
+          if (length(day_stats) == 0) {
+            return("No day-wise statistics available for this time course.")
+          }
+          
+          sig_days <- names(day_stats)[vapply(day_stats, function(x) isTRUE(x$significant), logical(1))]
+          if (length(sig_days) > 0) {
+            return(paste("Significant differences found at days:",
+                         paste(sig_days, collapse = ", ")))
+          } else {
+            return("No significant differences found at any day")
           }
         } else if (current_plot_type == "barplot") {
           # Pour bar plot, afficher la décision statistique retenue et sa raison
@@ -900,7 +947,7 @@ server <- function(input, output, session) {
   # REACTIVE OBSERVER FOR PLOT TYPE CHANGES
   # STRATEGY: Regenerate plot when user changes visualization type or parameters
   # PURPOSE: Allow users to explore different visualizations without rerunning full analysis
-  observeEvent(c(input$dose_plot_type, input$selected_day, input$barplot_day, input$barplot_concentration, input$plot_text_size, color_mapping$colors), {
+  observeEvent(c(input$dose_plot_type, input$selected_day, input$barplot_day, input$barplot_concentration, input$timecourse_concentration, input$plot_text_size, color_mapping$colors), {
     req(analysis_results$dose_data)
     
     # Ignore if data is not ready
@@ -939,6 +986,20 @@ server <- function(input, output, session) {
           var1 = input$var1,
           var2 = input$var2,
           colors = colors_to_use, # Utiliser les couleurs réactives
+          var1_order = current_order,
+          base_size = input$plot_text_size %||% 16
+        )
+      } else if (plot_type == "timecourse") {
+        if (is.null(input$timecourse_concentration)) {
+          return()
+        }
+        plot_result <- create_time_course_plot(
+          analysis_results$dose_data$summary_AZ,
+          analysis_results$dose_data$AZ_df,
+          dose_selected = as.numeric(input$timecourse_concentration),
+          var1 = input$var1,
+          var2 = input$var2,
+          colors = colors_to_use,
           var1_order = current_order,
           base_size = input$plot_text_size %||% 16
         )

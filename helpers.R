@@ -547,6 +547,17 @@ create_bar_plot <- function(AZ_df_No_NA, day_selected, conc_selected, var1, var2
     geom_bar(stat = "identity", alpha = 0.7) +
     geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
                   width = 0.2, linewidth = 1) +
+    # Points bruts individuels
+    geom_jitter(
+      data = plot_data,
+      aes(x = .data[[var1]], y = Percent_AZ0),
+      inherit.aes = FALSE,
+      width = 0.15,
+      height = 0,
+      size = 1.8,
+      alpha = 0.6,
+      color = "black"
+    ) +
     scale_fill_manual(values = colors) +
     theme_light(base_size = base_size) +
     theme(
@@ -565,8 +576,17 @@ create_bar_plot <- function(AZ_df_No_NA, day_selected, conc_selected, var1, var2
   
   # Ajouter les lettres CLD au graphique si elles existent
   if (!is.null(cld_letters) && "cld" %in% names(summary_data)) {
-    # Position y au-dessus des barres + erreur
-    y_position <- summary_data$mean + summary_data$se + (max(summary_data$mean + summary_data$se, na.rm = TRUE) * 0.05)
+    # Calculer le max réel (points + barre d'erreur) PAR groupe var1
+    max_by_group <- plot_data %>%
+      dplyr::group_by(.data[[var1]]) %>%
+      dplyr::summarise(max_point = max(Percent_AZ0, na.rm = TRUE), .groups = "drop")
+    
+    summary_data <- summary_data %>%
+      dplyr::left_join(max_by_group, by = var1) %>%
+      dplyr::mutate(
+        top_ref   = pmax(mean + se, max_point, na.rm = TRUE),
+        y_position = top_ref + (max(top_ref, na.rm = TRUE) * 0.08)
+      )
 
     p <- p + geom_text(
       data = summary_data,
@@ -576,7 +596,7 @@ create_bar_plot <- function(AZ_df_No_NA, day_selected, conc_selected, var1, var2
         label = cld
       ),
       vjust = 0,
-      size = base_size / 4,
+      size = base_size / 1.5,
       fontface = "bold",
       inherit.aes = FALSE
     )
@@ -603,6 +623,171 @@ create_bar_plot <- function(AZ_df_No_NA, day_selected, conc_selected, var1, var2
 }
 
 # ======================================================================
+# Function to create time course curve plot (at fixed concentration)
+# ======================================================================
+create_time_course_plot <- function(summary_AZ, AZ_df_No_NA, dose_selected, var1, var2, colors = NULL, var1_order = NULL, base_size = 16) {
+  # IMPORTANT: Convertir en data.frame pur et dégrouper
+  plot_data <- summary_AZ %>%
+    ungroup() %>%
+    filter(.data[[var2]] == dose_selected) %>%
+    as.data.frame()
+  
+  if (nrow(plot_data) == 0) {
+    stop(paste("No data available for", var2, "=", dose_selected))
+  }
+  
+  # Extraire le numéro du jour pour un axe numérique (Day1 -> 1, Day2 -> 2, ...)
+  plot_data$Day_num <- as.numeric(gsub("[^0-9]", "", plot_data$Day))
+  
+  # Appliquer l'ordre personnalisé si fourni
+  if (!is.null(var1_order) && length(var1_order) > 0) {
+    plot_data[[var1]] <- factor(plot_data[[var1]], levels = var1_order)
+  }
+  
+  # Générer des couleurs par défaut si nécessaire
+  if (is.null(colors) || any(is.null(colors)) || any(colors == "")) {
+    unique_levels <- if (!is.null(var1_order)) var1_order else unique(plot_data[[var1]])
+    colors <- RColorBrewer::brewer.pal(max(3, length(unique_levels)), "Set2")[1:length(unique_levels)]
+    names(colors) <- unique_levels
+  }
+  
+  # ANALYSE STATISTIQUE PAR JOUR
+  # STRATEGY: Compare between lines (var1) at each day, for the fixed concentration
+  # PURPOSE: Statistical significance for each day point
+  
+  # Filtrer les données brutes pour la concentration sélectionnée
+  raw_data_dose <- AZ_df_No_NA %>%
+    filter(.data[[var2]] == dose_selected)
+  
+  # Obtenir les jours uniques présents pour cette concentration
+  days <- sort(unique(raw_data_dose$Day))
+  
+  # Analyse statistique pour chaque jour
+  stats_by_day <- list()
+  
+  for (day in days) {
+    day_data <- raw_data_dose %>%
+      filter(Day == day)
+    
+    if (nrow(day_data) > 0 && length(unique(day_data[[var1]])) > 1) {
+      # Test de normalité
+      shapiro_results <- day_data %>%
+        dplyr::group_by(.data[[var1]]) %>%
+        dplyr::summarise(
+          n = dplyr::n(),
+          p_shapiro = if (dplyr::n() >= 3 && dplyr::n() <= 5000) {
+            shapiro.test(Percent_AZ0)$p.value
+          } else { NA_real_ },
+          .groups = 'drop'
+        )
+      
+      # Décision sur la normalité
+      is_normal <- all(shapiro_results$p_shapiro > 0.05, na.rm = TRUE)
+      
+      if (is_normal) {
+        # ANOVA
+        anova_result <- day_data %>%
+          anova_test(as.formula(paste("Percent_AZ0 ~", var1)))
+        
+        stats_by_day[[day]] <- list(
+          day = day,
+          test_type = "ANOVA",
+          p_value = anova_result$p,
+          significant = anova_result$p < 0.05,
+          shapiro_results = shapiro_results,
+          anova_results = anova_result
+        )
+        
+        # Post-hoc si significatif
+        if (anova_result$p < 0.05) {
+          tukey_result <- day_data %>%
+            tukey_hsd(as.formula(paste("Percent_AZ0 ~", var1)))
+          stats_by_day[[day]]$posthoc_results <- tukey_result
+        }
+        
+      } else {
+        # Kruskal-Wallis
+        kruskal_result <- day_data %>%
+          kruskal_test(as.formula(paste("Percent_AZ0 ~", var1)))
+        
+        stats_by_day[[day]] <- list(
+          day = day,
+          test_type = "Kruskal-Wallis",
+          p_value = kruskal_result$p,
+          significant = kruskal_result$p < 0.05,
+          shapiro_results = shapiro_results,
+          kruskal_results = kruskal_result
+        )
+        
+        # Post-hoc si significatif
+        if (kruskal_result$p < 0.05) {
+          dunn_result <- day_data %>%
+            dunn_test(as.formula(paste("Percent_AZ0 ~", var1)), p.adjust.method = "BH")
+          stats_by_day[[day]]$posthoc_results <- dunn_result
+        }
+      }
+    }
+  }
+  
+  # Créer le graphique
+  p <- ggplot(plot_data, aes(x = Day_num, y = mean,
+                             group = .data[[var1]], color = .data[[var1]])) +
+    geom_line(linewidth = 1.5) +
+    geom_point(size = 3) +
+    geom_errorbar(aes(ymin = mean - se, ymax = mean + se), width = .1, linewidth = 1) +
+    scale_x_continuous(breaks = sort(unique(plot_data$Day_num)),
+                       labels = paste0("Day", sort(unique(plot_data$Day_num)))) +
+    scale_color_manual(values = colors) +
+    theme_light(base_size = base_size) +
+    theme(
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor.x = element_blank(),
+      axis.title = element_text(size = base_size + 2, face = "bold"),
+      axis.text = element_text(size = base_size - 2),
+      legend.title = element_text(size = base_size, face = "bold"),
+      legend.text = element_text(size = base_size - 2),
+      plot.title = element_text(size = base_size + 4, face = "bold")
+    ) +
+    labs(
+      color = var1,
+      x = "Day",
+      y = "Mean Growth (%)",
+      title = paste("Time Course -", var2, "=", dose_selected)
+    )
+  
+  # Ajouter les annotations de significativité
+  # STRATEGY: Add significance indicators at each day
+  if (length(stats_by_day) > 0) {
+    sig_annotations <- data.frame()
+    for (day_name in names(stats_by_day)) {
+      stat_info <- stats_by_day[[day_name]]
+      if (stat_info$significant) {
+        day_num <- as.numeric(gsub("[^0-9]", "", day_name))
+        sig_annotations <- rbind(sig_annotations, data.frame(
+          x = day_num,
+          y = max(plot_data$mean + plot_data$se, na.rm = TRUE) * 1.1,
+          label = "*"
+        ))
+      }
+    }
+    
+    if (nrow(sig_annotations) > 0) {
+      p <- p + geom_text(data = sig_annotations,
+                         aes(x = x, y = y, label = label),
+                         inherit.aes = FALSE, size = base_size / 4, color = "red")
+    }
+  }
+  
+  return(list(
+    plot = p,
+    statistics = stats_by_day
+  ))
+}
+
+
+
+
+# ======================================================================
 # Robust export of statistical results to ZIP (supports curve/bar/violin)
 # ======================================================================
 create_statistical_export <- function(stats_results, filename_base = "statistical_results") {
@@ -616,7 +801,11 @@ create_statistical_export <- function(stats_results, filename_base = "statistica
   # - Curve: list par concentration (liste de sous-listes) avec test_type/p_value/posthoc_results
   # - Violin: stats_results == NULL (déjà géré plus haut)
   is_bar_like <- is.list(stats_results) && !is.null(stats_results$selected_test)
-  is_curve_like <- is.list(stats_results) && !is_bar_like && length(stats_results) > 0 && all(sapply(stats_results, is.list))
+  is_list_of_lists <- is.list(stats_results) && !is_bar_like && length(stats_results) > 0 && all(sapply(stats_results, is.list))
+  
+  # Distinguer curve (clés = concentrations numériques) de timecourse (clés = "Day1", "Day2", ...)
+  is_timecourse_like <- is_list_of_lists && all(grepl("^Day[0-9]+$", names(stats_results)))
+  is_curve_like <- is_list_of_lists && !is_timecourse_like
   
   temp_dir <- tempdir()
   export_dir <- file.path(temp_dir, paste0(filename_base, "_", format(Sys.time(), "%Y%m%d_%H%M%S")))
@@ -681,7 +870,6 @@ create_statistical_export <- function(stats_results, filename_base = "statistica
   
   # Export CURVE stats (par concentration)
   if (is_curve_like) {
-    # Consolider en data.frame
     flat <- lapply(names(stats_results), function(conc) {
       s <- stats_results[[conc]]
       data.frame(
@@ -697,7 +885,6 @@ create_statistical_export <- function(stats_results, filename_base = "statistica
     write.csv(summary_curve, curve_summary_file, row.names = FALSE)
     exported_files <- c(exported_files, curve_summary_file)
     
-    # Export des posthoc par concentration si présents
     for (conc in names(stats_results)) {
       s <- stats_results[[conc]]
       if (!is.null(s$posthoc_results)) {
@@ -707,7 +894,6 @@ create_statistical_export <- function(stats_results, filename_base = "statistica
       }
     }
     
-    # Export des tableaux Shapiro par concentration si présents
     for (conc in names(stats_results)) {
       s <- stats_results[[conc]]
       if (!is.null(s$shapiro_results)) {
@@ -718,13 +904,59 @@ create_statistical_export <- function(stats_results, filename_base = "statistica
     }
   }
   
+  # Export TIME COURSE stats (par jour)
+  if (is_timecourse_like) {
+    flat <- lapply(names(stats_results), function(day) {
+      s <- stats_results[[day]]
+      data.frame(
+        day = day,
+        test_type = s$test_type %||% NA_character_,
+        p_value = s$p_value %||% NA_real_,
+        significant = s$significant %||% NA,
+        stringsAsFactors = FALSE
+      )
+    })
+    summary_timecourse <- do.call(rbind, flat)
+    timecourse_summary_file <- file.path(export_dir, "timecourse_summary_by_day.csv")
+    write.csv(summary_timecourse, timecourse_summary_file, row.names = FALSE)
+    exported_files <- c(exported_files, timecourse_summary_file)
+    
+    for (day in names(stats_results)) {
+      s <- stats_results[[day]]
+      if (!is.null(s$posthoc_results)) {
+        f <- file.path(export_dir, paste0("posthoc_", day, ".csv"))
+        write.csv(s$posthoc_results, f, row.names = FALSE)
+        exported_files <- c(exported_files, f)
+      }
+    }
+    
+    for (day in names(stats_results)) {
+      s <- stats_results[[day]]
+      if (!is.null(s$shapiro_results)) {
+        f <- file.path(export_dir, paste0("shapiro_", day, ".csv"))
+        write.csv(s$shapiro_results, f, row.names = FALSE)
+        exported_files <- c(exported_files, f)
+      }
+    }
+  }
+  
   # Fichier de résumé
   summary_file <- file.path(export_dir, "analysis_summary.txt")
+  structure_label <- if (is_bar_like) {
+    "bar"
+  } else if (is_timecourse_like) {
+    "timecourse"
+  } else if (is_curve_like) {
+    "curve"
+  } else {
+    "unknown"
+  }
+  
   summary_lines <- c(
     "Statistical Analysis Summary",
     "===========================",
     paste("Analysis date:", format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
-    paste("Structure detected:", if (is_bar_like) "bar" else if (is_curve_like) "curve" else "unknown")
+    paste("Structure detected:", structure_label)
   )
 
   if (is_bar_like) {

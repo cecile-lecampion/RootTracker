@@ -646,6 +646,7 @@ ui <- dashboardPage(
                           radioButtons("dose_plot_type", NULL,
                                        choices = list(
                                          "Dose-Effect Curve (Log scale)" = "curve",
+                                         "Time Course (Specific Concentration)" = "timecourse",
                                          "Violin Plot (All Days)" = "violin",
                                          "Bar Plot (Specific Day & Concentration)" = "barplot"
                                        ),
@@ -661,6 +662,15 @@ ui <- dashboardPage(
                                 "Permissive: keep parametric test when variance is acceptable" = "prefer_parametric"
                               ),
                               selected = "strict"
+                            )
+                          ),
+                          
+                          conditionalPanel(
+                            condition = "input.dose_plot_type == 'timecourse'",
+                            div(
+                              style = "background-color: rgba(var(--rt-accent-rgb), 0.10); padding: 15px; border-radius: 5px; margin-top: 15px; border-left: 3px solid var(--rt-secondary);",
+                              h5(style = "margin-top: 0;", icon("clock"), " Time Course Settings"),
+                              uiOutput("timecourse_concentration_ui")
                             )
                           ),
 
@@ -904,11 +914,11 @@ ui <- dashboardPage(
                        # STRATEGY: Conditional display based on analysis type
                        # PURPOSE: Statistical information relevant to bar plot analysis only
                        conditionalPanel(
-                         condition = "input.dose_plot_type == 'barplot'",
+                         condition = "input.dose_plot_type == 'barplot' || input.dose_plot_type == 'curve' || input.dose_plot_type == 'timecourse'",
                          column(6,
-                           div(class = "info-box",
-                             h4("Statistical Decision"),
-                             verbatimTextOutput("normality_text")
+                                div(class = "info-box",
+                                    h4("Statistical Decision"),
+                                    verbatimTextOutput("normality_text")
                            )
                          )
                        )
